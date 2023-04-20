@@ -1,8 +1,5 @@
 let capitalize_ascii = Astring.String.Ascii.capitalize
 
-let bad_markup : ?suggestion:string -> string -> Loc.span -> Warning.t =
- fun ?suggestion -> Warning.make ?suggestion "'%s': bad markup."
-
 let leading_zero_in_heading_level : string -> Loc.span -> Warning.t =
   Warning.make "'%s': leading zero in heading level."
 
@@ -13,6 +10,11 @@ let markup_should_not_be_used : what:string -> Loc.span -> Warning.t =
  fun ~what ->
   Warning.make "%s should not be used because it has no effect."
     (capitalize_ascii what)
+
+let unknown_markup : string -> Loc.span -> Warning.t =
+ fun kind ->
+  let suggestion = "did you mean '{! ... }' or '[ ... ]'?" in
+  Warning.make ~suggestion "Unknown markup tag '%s'." kind
 
 let should_begin_on_its_own_line : what:string -> Loc.span -> Warning.t =
  fun ~what ->

@@ -39,6 +39,8 @@ type t =
     string
   | `Single_newline of string
   | `Blank_line of string
+  | (* Markup elements. Ends with [`Right_brace]. *)
+    `Begin_markup of string
   | (* A right curly brace ([}]), i.e. end of markup. *)
     `Right_brace
   | (* Words are anything that is not whitespace or markup. Markup symbols can be
@@ -82,6 +84,7 @@ type t =
   | tag ]
 
 let print : [< t ] -> string = function
+  | `Begin_markup kind -> "'{" ^ kind ^ "'"
   | `Begin_paragraph_style `Left -> "'{L'"
   | `Begin_paragraph_style `Center -> "'{C'"
   | `Begin_paragraph_style `Right -> "'{R'"
@@ -129,6 +132,7 @@ let describe : [< t | `Comment ] -> string = function
   | `Word w -> Printf.sprintf "'%s'" w
   | `Code_span _ -> "'[...]' (code)"
   | `Raw_markup _ -> "'{%...%}' (raw markup)"
+  | `Begin_markup kind -> "'{" ^ kind ^ "' (begin of an element)"
   | `Begin_paragraph_style `Left -> "'{L ...}' (left alignment)"
   | `Begin_paragraph_style `Center -> "'{C ...}' (center alignment)"
   | `Begin_paragraph_style `Right -> "'{R ...}' (right alignment)"

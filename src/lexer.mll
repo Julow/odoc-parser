@@ -249,9 +249,15 @@ let space_char =
   [' ' '\t' '\n' '\r']
 let bullet_char =
   ['-' '+']
-
 let word_char =
-  (_ # markup_char # space_char # bullet_char) | ('\\' markup_char)
+  (_ # markup_char # space_char # bullet_char)
+
+(* A sequence of word chars or one non-word char. *)
+let markup_element_kind =
+  word_char+ | _
+
+let text_char =
+  word_char | ('\\' markup_char)
 
 let horizontal_space =
   [' ' '\t']
@@ -292,8 +298,8 @@ rule token input = parse
   | '|'
     { emit input `Bar }
 
-  | word_char (word_char | bullet_char | '@')*
-  | bullet_char (word_char | bullet_char | '@')+ as w
+  | word_char (text_char | bullet_char | '@')*
+  | bullet_char (text_char | bullet_char | '@')+ as w
     { emit input (`Word (unescape_word w)) }
 
   | '['
@@ -332,13 +338,22 @@ rule token input = parse
   
   | "{math" space_char
     { math Block (Buffer.create 1024) 0 (Lexing.lexeme_start lexbuf) input lexbuf }
-    
+
   | "{m" horizontal_space
     { math Inline (Buffer.create 1024) 0 (Lexing.lexeme_start lexbuf) input lexbuf }
-    
+
 
   | "{!modules:" ([^ '}']* as modules) '}'
     { emit input (`Modules modules) }
+
+  | "{!modules:" ([^ '}']* as modules) eof
+    { warning
+        input
+        ~start_offset:(Lexing.lexeme_end lexbuf)
+        (Parse_error.not_allowed
+          ~what:(Token.describe `End)
+          ~in_what:(Token.describe (`Modules "")));
+      emit input (`Modules modules) }
 
   | (reference_start as start) ([^ '}']* as target) '}'
     { emit input (reference_token start target) }
@@ -471,15 +486,8 @@ rule token input = parse
   | "@hidden"
     { emit input (`Tag `Hidden) }
 
-
-  | '{'
-    { try bad_markup_recovery (Lexing.lexeme_start lexbuf) input lexbuf
-      with Failure _ ->
-        warning
-          input
-          (Parse_error.bad_markup
-            "{" ~suggestion:"escape the brace with '\\{'.");
-        emit input (`Word "{") }
+  | '{' (markup_element_kind as kind)
+    { emit input (`Begin_markup kind) }
 
   | ']'
     { warning input Parse_error.unpaired_right_bracket;
@@ -512,15 +520,6 @@ rule token input = parse
   | '\r'
     { warning input Parse_error.stray_cr;
       token input lexbuf }
-
-  | "{!modules:" ([^ '}']* as modules) eof
-    { warning
-        input
-        ~start_offset:(Lexing.lexeme_end lexbuf)
-        (Parse_error.not_allowed
-          ~what:(Token.describe `End)
-          ~in_what:(Token.describe (`Modules "")));
-      emit input (`Modules modules) }
 
   | (reference_start as start) ([^ '}']* as target) eof
     { warning
@@ -643,17 +642,6 @@ and verbatim buffer last_false_terminator start_offset input = parse
     { Buffer.add_char buffer c;
       verbatim buffer last_false_terminator start_offset input lexbuf }
 
-
-
-and bad_markup_recovery start_offset input = parse
-  | [^ '}']+ as text '}' as rest
-    { let suggestion =
-        Printf.sprintf "did you mean '{!%s}' or '[%s]'?" text text in
-      warning
-        input
-        ~start_offset
-        (Parse_error.bad_markup ("{" ^ rest) ~suggestion);
-      emit input (`Code_span text) ~start_offset}
 
 (* The second field of the metadata.
    This rule keeps whitespaces and newlines in the 'metadata' field except the

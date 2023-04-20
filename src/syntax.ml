@@ -162,12 +162,18 @@ type token_that_always_begins_an_inline_element =
 let _check_subset : token_that_always_begins_an_inline_element -> Token.t =
  fun t -> (t :> Token.t)
 
+let markup_element_kind = function
+  | "bold" -> `Inline (fun content -> `Styled (`Bold, content))
+  | "BOLD" ->
+    `Should_not_be_used
+  | _ -> `Unknown_markup
+
 (* Consumes tokens that make up a single non-link inline element:
 
    - a horizontal space ([`Space], significant in inline elements),
    - a word (see [word]),
    - a code span ([...], [`Code_span _]), or
-   - styled text ({e ...}).
+   - an inline markup ({e ...}).
 
    The latter requires a recursive call to [delimited_inline_element_list],
    defined below.
@@ -229,6 +235,36 @@ let rec inline_element :
         |> add_warning input;
 
       Loc.at location (`Styled (s, content))
+
+  | `Begin_markup kind as token ->
+      junk input;
+      let requires_leading_whitespace = false in
+      let content, brace_location =
+        delimited_inline_element_list ~parent_markup:token
+          ~parent_markup_location:location ~requires_leading_whitespace input
+      in
+
+      let element =
+        match markup_element_kind ~token kind with
+        | `Inline mk_elem ->
+        | `Block mk_elem ->
+        | `Should_not_be_used 
+        | Ok mk_elem ->
+            if content = [] then
+              Parse_error.should_not_be_empty
+                ~what:(Token.describe token)
+                location
+              |> add_warning input;
+
+            mk_elem content
+        | Error error ->
+            add_warning input (error ~what:(Token.describe token) location);
+            `Styled (`Italic, content)
+      in
+
+      let location = Loc.span [ location; brace_location ] in
+      Loc.at location element
+
   | `Simple_reference r ->
       junk input;
 
@@ -1069,6 +1105,36 @@ let rec block_element_list :
           |> Loc.at location
         in
         consume_block_elements ~parsed_a_tag `At_start_of_line (paragraph :: acc)
+
+    | { value = `Begin_markup kind as token; location } ->
+        junk input;
+        let content, brace_location =
+          delimited_inline_element_list ~parent_markup:token
+            ~parent_markup_location:location ~requires_leading_whitespace:true
+            input
+        in
+        let location = Loc.span [ location; brace_location ] in
+
+        let fallback () =
+          `Paragraph content |> accepted_in_all_contexts context
+        in
+
+        let element =
+          match markup_element_kind kind with
+          | `Inline mk_elem -> mk_elem content
+          | `Block mk_elem -> mk_elem content
+          | `Should_not_be_used ->
+              add_warning input
+                (Parse_error.markup_should_not_be_used
+                   ~what:(Token.describe token) location);
+              fallback ()
+          | `Unknown_markup ->
+              add_warning input (Parse_error.unknown_markup kind location);
+              fallback ()
+        in
+        consume_block_elements ~parsed_a_tag `At_start_of_line
+          (Loc.at location element :: acc)
+
   in
 
   let where_in_line =
