@@ -162,11 +162,16 @@ type token_that_always_begins_an_inline_element =
 let _check_subset : token_that_always_begins_an_inline_element -> Token.t =
  fun t -> (t :> Token.t)
 
-let markup_element_kind = function
+let markup_element_kind ~token ~location = function
   | "bold" -> `Inline (fun content -> `Styled (`Bold, content))
   | "BOLD" ->
-    `Should_not_be_used
-  | _ -> `Unknown_markup
+      add_warning input
+        (Parse_error.markup_should_not_be_used
+           ~what:(Token.describe token) location);
+      `Error
+  | _ ->
+      add_warning input (Parse_error.unknown_markup kind location);
+      `Error
 
 (* Consumes tokens that make up a single non-link inline element:
 
@@ -235,35 +240,6 @@ let rec inline_element :
         |> add_warning input;
 
       Loc.at location (`Styled (s, content))
-
-  | `Begin_markup kind as token ->
-      junk input;
-      let requires_leading_whitespace = false in
-      let content, brace_location =
-        delimited_inline_element_list ~parent_markup:token
-          ~parent_markup_location:location ~requires_leading_whitespace input
-      in
-
-      let element =
-        match markup_element_kind ~token kind with
-        | `Inline mk_elem ->
-        | `Block mk_elem ->
-        | `Should_not_be_used 
-        | Ok mk_elem ->
-            if content = [] then
-              Parse_error.should_not_be_empty
-                ~what:(Token.describe token)
-                location
-              |> add_warning input;
-
-            mk_elem content
-        | Error error ->
-            add_warning input (error ~what:(Token.describe token) location);
-            `Styled (`Italic, content)
-      in
-
-      let location = Loc.span [ location; brace_location ] in
-      Loc.at location element
 
   | `Simple_reference r ->
       junk input;
@@ -356,16 +332,29 @@ and delimited_inline_element_list :
   (* [~at_start_of_line] is used to interpret [`Minus] and [`Plus]. These are
      word tokens if not the first non-whitespace tokens on their line. Then,
      they are allowed in a non-link element list. *)
+  let stop_at_not_allowed ~token ~parent_markup ~location =
+    Parse_error.not_allowed
+      ~what:(Token.describe other_token)
+      ~in_what:(Token.describe parent_markup)
+      location
+    |> add_warning input;
+    let last_location =
+      match acc with
+      | last_token :: _ -> last_token.location
+      | [] -> parent_markup_location
+    in
+    (List.rev acc, last_location)
+  in
   let rec consume_elements :
       at_start_of_line:bool ->
       Ast.inline_element with_location list ->
       Ast.inline_element with_location list * Loc.span =
    fun ~at_start_of_line acc ->
-    let next_token = peek input in
-    match next_token.value with
+    let { value; location } = peek input in
+    match value with
     | `Right_brace ->
         junk input;
-        (List.rev acc, next_token.location)
+        (List.rev acc, location)
     (* The [`Space] token is not space at the beginning or end of line, because
        that is combined into [`Single_newline] or [`Blank_line] tokens. It is
        also not at the beginning of markup (after e.g. '{b'), because that is
@@ -375,23 +364,23 @@ and delimited_inline_element_list :
        it is an internal space, and we want to add it to the non-link inline
        element list. *)
     | (`Space _ | #token_that_always_begins_an_inline_element) as token ->
-        let acc = inline_element input next_token.location token :: acc in
+        let acc = inline_element input location token :: acc in
         consume_elements ~at_start_of_line:false acc
     | `Single_newline ws ->
         junk input;
-        let element = Loc.same next_token (`Space ws) in
+        let element = Loc.at location (`Space ws) in
         consume_elements ~at_start_of_line:true (element :: acc)
     | `Blank_line ws as blank ->
         Parse_error.not_allowed ~what:(Token.describe blank)
           ~in_what:(Token.describe parent_markup)
-          next_token.location
+          location
         |> add_warning input;
 
         junk input;
-        let element = Loc.same next_token (`Space ws) in
+        let element = Loc.at location (`Space ws) in
         consume_elements ~at_start_of_line:true (element :: acc)
     | `Bar as token ->
-        let acc = inline_element input next_token.location token :: acc in
+        let acc = inline_element input location token :: acc in
         consume_elements ~at_start_of_line:false acc
     | (`Minus | `Plus) as bullet ->
         (if at_start_of_line then
@@ -401,25 +390,32 @@ and delimited_inline_element_list :
          in
          Parse_error.not_allowed ~what:(Token.describe bullet)
            ~in_what:(Token.describe parent_markup)
-           ~suggestion next_token.location
+           ~suggestion location
          |> add_warning input);
 
-        let acc = inline_element input next_token.location bullet :: acc in
+        let acc = inline_element input location bullet :: acc in
         consume_elements ~at_start_of_line:false acc
-    | other_token ->
-        Parse_error.not_allowed
-          ~what:(Token.describe other_token)
-          ~in_what:(Token.describe parent_markup)
-          next_token.location
-        |> add_warning input;
-
-        let last_location =
-          match acc with
-          | last_token :: _ -> last_token.location
-          | [] -> parent_markup_location
+  | `Begin_markup kind as token ->
+      junk input;
+      let requires_leading_whitespace = false in
+      let consume_element () =
+        consume ();
+        let content, brace_location =
+          delimited_inline_element_list ~parent_markup:token
+            ~parent_markup_location:location ~requires_leading_whitespace input
         in
+        let location = Loc.span [ location; brace_location ] in
+      in
 
-        (List.rev acc, last_location)
+      (match markup_element_kind ~token ~location kind with
+       | `Inline mk_elem ->
+         consume_element ()
+           Loc.at location (mk_elem content)
+       | `Block mk_elem -> stop_at_not_allowed ~token ~parent_markup ~location
+       | `Error ->
+         consume_element ()
+      )
+    | token -> stop_at_not_allowed ~token ~parent_markup ~location
   in
 
   let first_token = peek input in
@@ -1120,16 +1116,12 @@ let rec block_element_list :
         in
 
         let element =
-          match markup_element_kind kind with
+          match markup_element_kind ~token ~location kind with
           | `Inline mk_elem -> mk_elem content
           | `Block mk_elem -> mk_elem content
-          | `Should_not_be_used ->
-              add_warning input
-                (Parse_error.markup_should_not_be_used
-                   ~what:(Token.describe token) location);
+          | `Error ->
               fallback ()
           | `Unknown_markup ->
-              add_warning input (Parse_error.unknown_markup kind location);
               fallback ()
         in
         consume_block_elements ~parsed_a_tag `At_start_of_line
